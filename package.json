@@ -1,0 +1,33 @@
+{
+  "name": "speaker-gpt",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "debug": "npx nodemon"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sargo/speaker-gpt.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/sargo/speaker-gpt/issues"
+  },
+  "homepage": "https://github.com/sargo/speaker-gpt#readme",
+  "devDependencies": {
+    "nodemon": "^2.0.21"
+  },
+  "dependencies": {
+    "@google-cloud/speech": "^5.4.0",
+    "@google-cloud/text-to-speech": "^4.2.1",
+    "dotenv": "^16.0.3",
+    "node-audiorecorder": "^3.0.0",
+    "onoff": "^6.0.3",
+    "openai": "^3.2.1",
+    "speaker": "^0.5.4"
+  }
+}
