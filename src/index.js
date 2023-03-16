@@ -1,22 +1,35 @@
+require('dotenv').config()
+
+const { getStatus, setStatus } = require('./status');
+
+setStatus('initializing');
+
 const fs = require('fs');
 const path = require('path');
 const Gpio = require('onoff').Gpio;
 const AudioRecorder = require('node-audiorecorder');
 const speechToText = require('@google-cloud/speech');
 const textToSpeech = require('@google-cloud/text-to-speech');
-const { Configuration, OpenAIApi } = require("openai");
+const { Configuration, OpenAIApi } = require('openai');
 const Readable = require('stream').Readable
 const Speaker = require('speaker');
 
-
-require('dotenv').config()
+const button = new Gpio(26, 'in', 'falling', {debounceTimeout: 50});
 
 const audioRecorderOptions = {
   program: 'sox',
-  silence: 5,
+  silence: 2.5,
   device: 'hw:1,0',
 };
 const audioRecorder = new AudioRecorder(audioRecorderOptions)
+
+const speakerConfig = {
+ channels: 1,
+ bitDepth: 16,
+ sampleRate: 22050,
+ device: 'hw:1,0',
+};
+let speaker = null;
 
 const sttRequest = {
   config: {
@@ -27,6 +40,11 @@ const sttRequest = {
   interimResults: false
 };
 const sttClient = new speechToText.SpeechClient({projectId: 'speaker-gpt', keyFilename: '.gcloud_key'});
+
+const ttsRequest = {
+  voice: {languageCode: 'pl-PL', ssmlGender: 'NEUTRAL'},
+  audioConfig: {audioEncoding: 'LINEAR16', sampleRateHertz: 22050},
+};
 const ttsClient = new textToSpeech.TextToSpeechClient({projectId: 'speaker-gpt', keyFilename: '.gcloud_key'});
 
 const opneaiConfig = new Configuration({
@@ -34,84 +52,86 @@ const opneaiConfig = new Configuration({
 });
 const openai = new OpenAIApi(opneaiConfig);
 
-const button = new Gpio(18, 'in', 'both', {debounceTimeout: 50});
-
-
-let recordStartTS;
-let recordStopTS;
-
 
 function startRecord() {
-  console.log('recording started');
-  recordStartTS = Date.now();
+  setStatus('recording');
 
   let sttStream = sttClient.streamingRecognize(sttRequest)
-    .on(`error`, console.error)
-    .on(`data`, async function(data) {
+    .on('error', (err) => {
+      setStatus('error');
+      console.error(err);
+    })
+    .on('data', async (data) => {
       const transcript = data.results[0].alternatives[0].transcript;
-      console.log(`Transcript: '${transcript}'.`);
+      console.log(`Input: '${transcript}'.`);
 
+      setStatus('waiting-gpt');
       try {
         const completion = await openai.createChatCompletion({
-          model: "gpt-3.5-turbo",
-          messages: [{role: "user", content: transcript}],
+          model: 'gpt-3.5-turbo',
+          messages: [{role: 'user', content: transcript}],
         });
 
         const gptResponse = completion.data.choices[0].message.content;
-        console.log(`ChatGPT: ${gptResponse}`);
+        console.log(`Output: ${gptResponse}`);
 
-        const ttsRequest = {
-          input: {text: gptResponse},
-          voice: {languageCode: 'pl-PL', ssmlGender: 'NEUTRAL'},
-          audioConfig: {audioEncoding: 'LINEAR16'},
-        };
+        setStatus('waiting-tts');
+        const [ttsResponse] = await ttsClient.synthesizeSpeech({input: {text: gptResponse}, ...ttsRequest});
 
-        const [ttsResponse] = await ttsClient.synthesizeSpeech(ttsRequest);
-
-        const speaker = new Speaker({
-          channels: 1,
-          bitDepth: 16,
-          sampleRate: 24000,
-          device: 'hw:1,0',
+        setStatus('playing');
+        const ttsStream = Readable.from(ttsResponse.audioContent);
+        speaker = new Speaker(speakerConfig);
+        speaker.on('error', (err) => {
+          setStatus('error');
+          console.error(err);
+          speaker = null;
+        });
+        speaker.on('close', () => {
+          setStatus('idle');
+          speaker = null;
         });
 
-        const ttsStream = Readable.from(ttsResponse.audioContent);
         ttsStream.pipe(speaker);
 
       } catch (error) {
+        setStatus('error');
         if (error.response) {
-          console.log(error.response.status);
-          console.log(error.response.data);
+          console.error(error.response.status);
+          console.error(error.response.data);
         } else {
-          console.log(error.message);
+          console.error(error.message);
         }
       }
     });
 
 
-  audioRecorder.start().stream().pipe(sttStream);
-}
-
-function stopRecord() {
-  audioRecorder.stop();
-  recordStopTS = Date.now();
-  console.log(`recorded ${Math.floor((recordStopTS - recordStartTS) / 1000)}s`);
+  audioRecorder.start().stream().pipe(sttStream)
+  audioRecorder.on('close', () => {
+    setStatus('waiting-stt');
+  });
 }
 
 button.watch((err, value) => {
   if (err) {
+    setStatus('error');
     throw err;
   }
-  if (value === Gpio.LOW) {
-    startRecord();
-  } else {
-    stopRecord();
+  const status = getStatus();
+  if (status === 'playing' && speaker) {
+    // speaker.close will throw error so let's disable event handler first
+    speaker.removeAllListeners('error');
+    speaker.on('error', () => {});
+    speaker.close(true);
   }
-
+  else if (status === 'idle') {
+    startRecord();
+  }
 });
 
 process.on('SIGINT', _ => {
   button.unexport();
 });
 
-console.log('Started, press and hold button to start recording');
+console.log('Started, press button to start recording');
+
+setStatus('idle');
