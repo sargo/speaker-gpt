@@ -105,10 +105,16 @@ function startRecord() {
     });
 
 
-  audioRecorder.start().stream().pipe(sttStream)
+  audioRecorder.start().stream().pipe(sttStream);
   audioRecorder.on('close', () => {
     setStatus('waiting-stt');
   });
+  // avoid recording for too long in a noisy environment
+  setTimeout(() => {
+    if(getStatus() === 'recording') {
+      audioRecorder.stop();
+    }
+  }, 10*1000); // 10s
 }
 
 button.watch((err, value) => {
